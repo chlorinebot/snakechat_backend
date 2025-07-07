@@ -135,12 +135,3 @@ COMMENT='Bảng quản lý chặn người dùng';
 ALTER TABLE user_blocks 
 ADD CONSTRAINT chk_no_self_block 
 CHECK (blocker_id != blocked_id);
-
--- Tạo bảng thông báo chung
-CREATE TABLE IF NOT EXISTS GeneralAnnouncement (
-  AnnouncementID INT(11) PRIMARY KEY AUTO_INCREMENT,
-  AnnouncementContent TEXT NOT NULL,
-  AnnouncementType VARCHAR(100) NOT NULL DEFAULT 'Thông tin',
-  CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
-COMMENT='Bảng quản lý thông báo chung của hệ thống';
