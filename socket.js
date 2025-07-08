@@ -10,18 +10,39 @@ const sentMessages = new Set();
 const setupSocket = (server) => {
   const io = socketIo(server, {
     cors: {
-      origin: '*', // Trong môi trường production, hãy giới hạn nguồn gốc cụ thể
-      methods: ['GET', 'POST']
+      origin: [
+        'https://snakechatfrontend.up.railway.app', // URL deploy chính
+        'http://localhost:3000', // Dev environment
+        'http://localhost:5173', // Vite dev server
+        'https://localhost:3000',
+        'https://localhost:5173'
+      ],
+      methods: ['GET', 'POST'],
+      credentials: true,
+      allowedHeaders: ['Content-Type', 'Authorization']
     },
-    pingTimeout: 60000, // Tăng thời gian timeout để giữ kết nối ổn định hơn
-    pingInterval: 25000 // Giảm khoảng thời gian ping để phát hiện mất kết nối sớm hơn
+    pingTimeout: 60000, // 60 giây timeout
+    pingInterval: 25000, // Ping mỗi 25 giây
+    upgradeTimeout: 30000, // 30 giây cho upgrade
+    allowEIO3: true, // Tương thích với Engine.IO v3
+    transports: ['websocket', 'polling'], // Hỗ trợ cả websocket và polling fallback
+    allowUpgrades: true, // Cho phép upgrade từ polling lên websocket
+    perMessageDeflate: false, // Tắt compression để giảm latency
+    httpCompression: false,
+    cookie: false // Không sử dụng cookie cho socket
+  });
+
+  // Middleware xử lý lỗi kết nối
+  io.engine.on('connection_error', (err) => {
+    console.error('[SOCKET-SERVER] Lỗi kết nối engine:', err.message);
+    console.error('[SOCKET-SERVER] Chi tiết lỗi:', err.context);
   });
 
   io.on('connection', (socket) => {
     const userId = socket.handshake.query.userId;
     
     if (userId) {
-      console.log(`[SOCKET-SERVER] Người dùng ${userId} đã kết nối`);
+      console.log(`[SOCKET-SERVER] Người dùng ${userId} đã kết nối từ ${socket.handshake.address}`);
       
       // Lưu socket theo user ID
       userSockets.set(parseInt(userId), socket);
@@ -29,7 +50,8 @@ const setupSocket = (server) => {
       // Gửi sự kiện xác nhận kết nối thành công
       socket.emit('connection_success', {
         user_id: userId,
-        connected_at: new Date().toISOString()
+        connected_at: new Date().toISOString(),
+        server_time: new Date().toISOString()
       });
       
       // Lắng nghe sự kiện tin nhắn đã đọc
@@ -40,6 +62,7 @@ const setupSocket = (server) => {
           // Kiểm tra dữ liệu đầu vào
           if (!data.conversation_id || !data.reader_id) {
             console.error('[SOCKET-SERVER] Dữ liệu không hợp lệ:', data);
+            socket.emit('error', { message: 'Dữ liệu không hợp lệ' });
             return;
           }
           
@@ -65,8 +88,8 @@ const setupSocket = (server) => {
                   SELECT message_id FROM messages 
                   WHERE conversation_id = ? 
                   AND sender_id = ? 
-                  AND message_id IN (?)
-                `, [data.conversation_id, sender.sender_id, data.message_ids]);
+                  AND message_id IN (${data.message_ids.map(() => '?').join(',')})
+                `, [data.conversation_id, sender.sender_id, ...data.message_ids]);
                 
                 if (senderMessages && senderMessages.length > 0) {
                   sendNotificationToUser(parseInt(sender.sender_id), 'message_read_receipt', {
@@ -88,24 +111,37 @@ const setupSocket = (server) => {
           }
         } catch (error) {
           console.error('[SOCKET-SERVER] Lỗi khi xử lý thông báo tin nhắn đã đọc:', error);
+          socket.emit('error', { message: 'Lỗi xử lý thông báo' });
         }
       });
       
-      // Kiểm tra kết nối định kỳ
+      // Kiểm tra kết nối định kỳ với heartbeat
       socket.on('ping', (data) => {
-        socket.emit('pong', { timestamp: new Date().toISOString() });
+        socket.emit('pong', { 
+          timestamp: new Date().toISOString(),
+          server_time: new Date().toISOString(),
+          user_id: userId
+        });
+      });
+      
+      // Xử lý lỗi socket
+      socket.on('error', (error) => {
+        console.error(`[SOCKET-SERVER] Lỗi socket từ người dùng ${userId}:`, error);
       });
       
       // Xử lý ngắt kết nối
-      socket.on('disconnect', () => {
-        console.log(`[SOCKET-SERVER] Người dùng ${userId} đã ngắt kết nối`);
+      socket.on('disconnect', (reason) => {
+        console.log(`[SOCKET-SERVER] Người dùng ${userId} đã ngắt kết nối. Lý do: ${reason}`);
         userSockets.delete(parseInt(userId));
       });
+    } else {
+      console.warn('[SOCKET-SERVER] Kết nối không có userId, đóng kết nối');
+      socket.disconnect(true);
     }
   });
 
-  // Thiết lập kiểm tra kết nối định kỳ
-  setInterval(() => {
+  // Thiết lập kiểm tra kết nối định kỳ và cleanup
+  const cleanupInterval = setInterval(() => {
     const now = new Date();
     console.log(`[SOCKET-SERVER] Kiểm tra kết nối: ${userSockets.size} người dùng đang kết nối`);
     
@@ -113,11 +149,26 @@ const setupSocket = (server) => {
     const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
     for (const messageKey of sentMessages) {
       const [, timestamp] = messageKey.split('-');
-      if (new Date(parseInt(timestamp)) < fiveMinutesAgo) {
+      if (timestamp && new Date(parseInt(timestamp)) < fiveMinutesAgo) {
         sentMessages.delete(messageKey);
       }
     }
+
+    // Kiểm tra và xóa các socket không còn kết nối
+    for (const [userId, socket] of userSockets.entries()) {
+      if (!socket.connected) {
+        console.log(`[SOCKET-SERVER] Xóa socket không kết nối của người dùng ${userId}`);
+        userSockets.delete(userId);
+      }
+    }
   }, 60000); // Mỗi phút
+
+  // Cleanup khi server shutdown
+  process.on('SIGTERM', () => {
+    console.log('[SOCKET-SERVER] Đang đóng server...');
+    clearInterval(cleanupInterval);
+    io.close();
+  });
 
   return io;
 };

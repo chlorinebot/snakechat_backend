@@ -13,33 +13,46 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const errorHandler = require('./middleware/errorHandler');
 const { setupInactiveUsersCron } = require('./services/cronService');
 const { setupSocket } = require('./socket');
+const { connectToDatabase, isConnected } = require('./db');
 
 const app = express();
 const server = http.createServer(app);
 
-// Thiết lập Socket.IO
-const io = setupSocket(server);
-// Chia sẻ io với các module khác
-app.set('io', io);
+// CORS Configuration cho production
+const corsOptions = {
+  origin: [
+    'https://snakechatfrontend.up.railway.app', // Production URL
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://localhost:3000',
+    'https://localhost:5173'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+
+// Trust proxy cho Railway
+app.set('trust proxy', 1);
 
 // Middleware
-app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Middleware để ghi log request
-app.use((req, res, next) => {
-  if (req.method !== 'GET' && !(req.method === 'POST' && req.url.includes('/api/user/update-status'))) {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  }
-  next();
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    database: isConnected() ? 'connected' : 'disconnected',
+    uptime: process.uptime()
+  });
 });
 
 // Routes
-app.get('/', (req, res) => {
-    res.json({ message: 'Chào mừng đến với Node.js Backend!' });
-});
-
-// API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/role', roleRoutes);
@@ -50,12 +63,73 @@ app.use('/api/report', reportRoutes);
 app.use('/api/announcement', announcementRoutes);
 app.use('/api/upload', uploadRoutes);
 
-// Error Handler
+// Error handling middleware
 app.use(errorHandler);
 
-// Khởi động server
-const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-    console.log(`🚀 Server đang chạy trên cổng ${PORT} 🚀`);
-    setupInactiveUsersCron();
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.originalUrl,
+    method: req.method
+  });
 });
+
+// Thiết lập Socket.IO
+const io = setupSocket(server);
+// Chia sẻ io với các module khác
+app.set('io', io);
+
+// Khởi động cron jobs
+setupInactiveUsersCron();
+
+const PORT = process.env.PORT || 8000;
+
+// Graceful shutdown
+const gracefulShutdown = () => {
+  console.log('🔄 Đang shutdown server...');
+  
+  server.close(() => {
+    console.log('✅ HTTP server đã đóng');
+    process.exit(0);
+  });
+  
+  // Force close sau 10 giây
+  setTimeout(() => {
+    console.error('❌ Buộc đóng server');
+    process.exit(1);
+  }, 10000);
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+// Error handling
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  gracefulShutdown();
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Khởi động server
+const startServer = async () => {
+  try {
+    // Đợi database kết nối trước khi start server
+    await connectToDatabase();
+    
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log('🚀 Server đang chạy trên cổng:', PORT);
+      console.log('🌍 Environment:', process.env.NODE_ENV || 'development');
+      console.log('✅ Socket.IO đã được thiết lập');
+    });
+    
+  } catch (error) {
+    console.error('❌ Lỗi khởi động server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
