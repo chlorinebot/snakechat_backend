@@ -13,11 +13,16 @@ const pool = mysql.createPool({
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
   timezone: '+07:00', // Thiết lập múi giờ Việt Nam
+  acquireTimeout: 60000, // 60 giây timeout để lấy connection
+  timeout: 60000, // 60 giây timeout cho query
+  reconnect: true, // Tự động kết nối lại
+  idleTimeout: 300000, // 5 phút idle timeout
 });
 
 // Biến theo dõi trạng thái kết nối
 let connected = false;
 let retryCount = 0;
+const maxRetries = 5; // Giới hạn số lần thử kết nối
 
 // Kiểm tra kết nối
 const connectToDatabase = async () => {
@@ -40,7 +45,13 @@ const connectToDatabase = async () => {
     // Tăng số lần thử kết nối
     retryCount++;
     
-    console.log(`🔄 Thử kết nối lại sau 5 giây... (Lần thử ${retryCount}) 🔄`);
+    // Nếu vượt quá số lần thử tối đa, không thử lại nữa
+    if (retryCount >= maxRetries) {
+      console.error(`❌ Đã thử kết nối ${maxRetries} lần, dừng thử kết nối lại`);
+      return null;
+    }
+    
+    console.log(`🔄 Thử kết nối lại sau 5 giây... (Lần thử ${retryCount}/${maxRetries}) 🔄`);
     // Thử kết nối lại sau 5 giây
     setTimeout(() => {
       connectToDatabase();
@@ -60,6 +71,22 @@ const isConnected = () => {
 const getRetryCount = () => {
   return retryCount;
 };
+
+// Xử lý lỗi pool
+pool.on('connection', (connection) => {
+  console.log('📦 MySQL pool connection established as id ' + connection.threadId);
+});
+
+pool.on('error', (err) => {
+  console.error('❌ MySQL pool error:', err);
+  if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+    console.log('🔄 Kết nối MySQL bị mất, thử kết nối lại...');
+    connected = false;
+    connectToDatabase();
+  } else {
+    console.error('❌ Lỗi MySQL nghiêm trọng:', err);
+  }
+});
 
 // Khởi tạo kết nối
 connectToDatabase();
