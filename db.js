@@ -93,6 +93,7 @@ connectToDatabase();
 
 module.exports = {
   pool,
+  db: pool,
   isConnected,
   connectToDatabase,
   getRetryCount

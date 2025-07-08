@@ -18,6 +18,23 @@ const { connectToDatabase, isConnected, db } = require('./db');
 const app = express();
 const server = http.createServer(app);
 
+// Định nghĩa PORT sớm
+const PORT = process.env.PORT || 8000;
+
+// Health check endpoint - ưu tiên cao nhất
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    port: PORT,
+    uptime: process.uptime()
+  });
+});
+
 // CORS Configuration cho production
 const corsOptions = {
   origin: [
@@ -41,40 +58,6 @@ app.set('trust proxy', true);
 // Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Health check endpoint - quan trọng cho Railway
-app.get('/health', (req, res) => {
-  try {
-    console.log('[HEALTH-CHECK] Health check request received');
-    
-    const healthData = {
-      status: 'OK',
-      timestamp: new Date().toISOString(),
-      database: isConnected() ? 'connected' : 'disconnected',
-      uptime: process.uptime(),
-      memory: process.memoryUsage(),
-      version: process.version,
-      port: PORT,
-      env: process.env.NODE_ENV || 'development'
-    };
-    
-    console.log('[HEALTH-CHECK] Responding with:', healthData);
-    res.status(200).json(healthData);
-  } catch (error) {
-    console.error('[HEALTH-CHECK] Error in health check:', error);
-    res.status(500).json({
-      status: 'ERROR',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Thêm endpoint ping đơn giản
-app.get('/ping', (req, res) => {
-  console.log('[PING] Ping request received');
-  res.status(200).send('pong');
-});
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -142,16 +125,26 @@ try {
   console.error('❌ Lỗi khi khởi động cron jobs:', error);
 }
 
-const PORT = process.env.PORT || 8000;
+console.log('🚀 SnakeChat Backend khởi động thành công!');
 
-// Khởi động server với error handling tốt hơn
+// Khởi động server đơn giản
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server đang chạy trên port ${PORT}`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-  console.log(`📊 API docs: http://localhost:${PORT}/`);
+  console.log(`🔗 Health check: http://0.0.0.0:${PORT}/ping`);
+  console.log(`📊 API docs: http://0.0.0.0:${PORT}/`);
   console.log(`🏠 Host: 0.0.0.0`);
+  console.log('✅ Server sẵn sàng nhận request!');
 });
+
+// Kết nối database async - không block server
+connectToDatabase()
+  .then(() => {
+    console.log('✅ Database connection khởi tạo thành công');
+  })
+  .catch((error) => {
+    console.warn('⚠️ Database connection failed, server vẫn hoạt động:', error?.message);
+  });
 
 server.on('error', (error) => {
   console.error('❌ Server error:', error);
@@ -205,5 +198,3 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('💥 Unhandled Rejection tại:', promise, 'lý do:', reason);
   gracefulShutdown('unhandledRejection');
 });
-
-console.log('🚀 SnakeChat Backend khởi động thành công!');
