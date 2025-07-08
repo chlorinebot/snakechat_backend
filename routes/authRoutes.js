@@ -3,6 +3,45 @@ const router = express.Router();
 const bcrypt = require('bcrypt');
 const { pool, isConnected } = require('../db');
 
+// Tạo tài khoản admin mặc định (chỉ để setup lần đầu)
+router.post('/setup-admin', async (req, res) => {
+    try {
+        // Kiểm tra xem đã có admin chưa
+        const [admins] = await pool.query('SELECT * FROM users WHERE role_id = 1');
+        
+        if (admins.length > 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: 'Tài khoản admin đã tồn tại' 
+            });
+        }
+
+        // Tạo tài khoản admin mặc định
+        const hashedPassword = await bcrypt.hash('admin123', 10);
+        
+        const [result] = await pool.query(
+            'INSERT INTO users (username, email, password, role_id) VALUES (?, ?, ?, ?)',
+            ['admin', 'admin@snakechat.com', hashedPassword, 1]
+        );
+
+        res.status(201).json({
+            success: true,
+            message: 'Tài khoản admin đã được tạo thành công',
+            admin: {
+                username: 'admin',
+                email: 'admin@snakechat.com',
+                role_id: 1
+            }
+        });
+    } catch (error) {
+        console.error('Lỗi tạo admin:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Lỗi server' 
+        });
+    }
+});
+
 // Đăng ký
 router.post('/register', async (req, res) => {
     try {
