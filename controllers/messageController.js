@@ -42,17 +42,6 @@ exports.sendMessage = async (req, res) => {
   try {
     await connection.beginTransaction();
     
-    // Kiểm tra xem người gửi có thuộc cuộc trò chuyện không
-    const [memberCheck] = await connection.query(`
-      SELECT user_id FROM conversation_members 
-      WHERE conversation_id = ? AND user_id = ? AND left_at IS NULL
-    `, [conversation_id, sender_id]);
-    
-    if (memberCheck.length === 0) {
-      await connection.rollback();
-      return res.status(403).json({ error: 'Bạn không có quyền gửi tin nhắn trong cuộc trò chuyện này' });
-    }
-    
     // Thêm tin nhắn vào database
     const [messageResult] = await connection.query(`
       INSERT INTO messages (conversation_id, sender_id, content, message_type, created_at, is_read)
@@ -75,7 +64,7 @@ exports.sendMessage = async (req, res) => {
       SELECT username, avatar FROM users WHERE user_id = ?
     `, [sender_id]);
     
-    const senderName = senderResults.length > 0 ? senderResults[0].username : 'Unknown';
+    const senderName = senderResults.length > 0 ? senderResults[0].username : null;
     const senderAvatar = senderResults.length > 0 ? senderResults[0].avatar : null;
     
     // Lấy thông tin chi tiết tin nhắn vừa gửi
@@ -92,7 +81,7 @@ exports.sendMessage = async (req, res) => {
       sender_avatar: senderAvatar
     };
     
-    // Lấy danh sách TẤT CẢ thành viên trong cuộc trò chuyện để gửi thông báo
+    // Lấy danh sách TẤT CẢ thành viên trong cuộc trò chuyện để gửi thông báo (bao gồm cả người gửi)
     const [members] = await pool.query(`
       SELECT user_id
       FROM conversation_members
@@ -100,48 +89,26 @@ exports.sendMessage = async (req, res) => {
     `, [conversation_id]);
     
     // Gửi thông báo tin nhắn mới qua socket đến TẤT CẢ thành viên
-    let successfulNotifications = 0;
-    let totalNotifications = 0;
-    
     members.forEach(member => {
-      totalNotifications++;
+      // Gửi nội dung tin nhắn cho tất cả, kể cả người gửi
+      socketService.sendNotificationToUser(member.user_id, 'new_message', message);
       
-      try {
-        // Gửi nội dung tin nhắn cho tất cả, kể cả người gửi
-        const notificationSent = socketService.sendNotificationToUser(member.user_id, 'new_message', message);
-        
-        if (notificationSent) {
-          successfulNotifications++;
-        }
-        
-        // Chỉ gửi thông báo cập nhật số lượng tin nhắn chưa đọc cho các thành viên khác
-        if (member.user_id !== sender_id) {
-          socketService.sendUnreadCountUpdate(member.user_id);
-        }
-      } catch (socketError) {
-        console.error(`[MESSAGE-CONTROLLER] Lỗi gửi socket notification đến user ${member.user_id}:`, socketError);
+      // Chỉ gửi thông báo cập nhật số lượng tin nhắn chưa đọc cho các thành viên khác
+      if (member.user_id !== sender_id) {
+        socketService.sendUnreadCountUpdate(member.user_id);
       }
     });
-    
-    console.log(`[MESSAGE-CONTROLLER] Đã gửi thông báo đến ${successfulNotifications}/${totalNotifications} thành viên`);
     
     return res.status(201).json({
       success: true,
       message: 'Gửi tin nhắn thành công',
-      data: message,
-      notification_stats: {
-        total_members: totalNotifications,
-        successful_notifications: successfulNotifications
-      }
+      data: message
     });
     
   } catch (error) {
     await connection.rollback();
-    console.error('[MESSAGE-CONTROLLER] Lỗi khi gửi tin nhắn:', error);
-    return res.status(500).json({ 
-      error: 'Lỗi server khi gửi tin nhắn',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    console.error('Lỗi khi gửi tin nhắn:', error);
+    return res.status(500).json({ error: 'Lỗi server khi gửi tin nhắn' });
   } finally {
     connection.release();
   }
