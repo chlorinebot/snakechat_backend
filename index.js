@@ -13,7 +13,7 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const errorHandler = require('./middleware/errorHandler');
 const { setupInactiveUsersCron } = require('./services/cronService');
 const { setupSocket } = require('./socket');
-const { connectToDatabase, isConnected } = require('./db');
+const { connectToDatabase, isConnected, db } = require('./db');
 
 const app = express();
 const server = http.createServer(app);
@@ -44,23 +44,56 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Health check endpoint - quan trọng cho Railway
 app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    database: isConnected() ? 'connected' : 'disconnected',
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    version: process.version
-  });
+  try {
+    console.log('[HEALTH-CHECK] Health check request received');
+    
+    const healthData = {
+      status: 'OK',
+      timestamp: new Date().toISOString(),
+      database: isConnected() ? 'connected' : 'disconnected',
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      version: process.version,
+      port: PORT,
+      env: process.env.NODE_ENV || 'development'
+    };
+    
+    console.log('[HEALTH-CHECK] Responding with:', healthData);
+    res.status(200).json(healthData);
+  } catch (error) {
+    console.error('[HEALTH-CHECK] Error in health check:', error);
+    res.status(500).json({
+      status: 'ERROR',
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Thêm endpoint ping đơn giản
+app.get('/ping', (req, res) => {
+  console.log('[PING] Ping request received');
+  res.status(200).send('pong');
 });
 
 // Root endpoint
 app.get('/', (req, res) => {
-  res.status(200).json({
-    message: 'SnakeChat Backend API đang hoạt động',
-    timestamp: new Date().toISOString(),
-    status: 'running'
-  });
+  try {
+    console.log('[ROOT] Root endpoint accessed');
+    res.status(200).json({
+      message: 'SnakeChat Backend API đang hoạt động',
+      timestamp: new Date().toISOString(),
+      status: 'running',
+      port: PORT,
+      version: process.version
+    });
+  } catch (error) {
+    console.error('[ROOT] Error in root endpoint:', error);
+    res.status(500).json({
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // Routes với error wrapper
@@ -111,82 +144,66 @@ try {
 
 const PORT = process.env.PORT || 8000;
 
+// Khởi động server với error handling tốt hơn
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server đang chạy trên port ${PORT}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+  console.log(`📊 API docs: http://localhost:${PORT}/`);
+  console.log(`🏠 Host: 0.0.0.0`);
+});
+
+server.on('error', (error) => {
+  console.error('❌ Server error:', error);
+  if (error.code === 'EADDRINUSE') {
+    console.error(`🚫 Port ${PORT} đã được sử dụng. Thử port khác.`);
+    process.exit(1);
+  }
+});
+
 // Graceful shutdown
-const gracefulShutdown = (signal) => {
-  console.log(`🔄 Nhận signal ${signal}, đang shutdown server...`);
+const gracefulShutdown = async (signal) => {
+  console.log(`\n📴 Nhận tín hiệu ${signal}. Đang tắt server...`);
   
-  server.close((err) => {
-    if (err) {
-      console.error('❌ Lỗi khi đóng server:', err);
-      process.exit(1);
-    }
-    console.log('✅ HTTP server đã đóng');
+  // Ngừng nhận connection mới
+  server.close(async () => {
+    console.log('🔌 HTTP server đã đóng');
     
-    // Đóng socket.io nếu có
-    if (io) {
-      io.close(() => {
-        console.log('✅ Socket.IO đã đóng');
-        process.exit(0);
-      });
-    } else {
+    try {
+      // Đóng database connection
+      if (db) {
+        await db.end();
+        console.log('🗄️ Database connection đã đóng');
+      }
+      
+      console.log('✅ Graceful shutdown hoàn thành');
       process.exit(0);
+    } catch (error) {
+      console.error('❌ Lỗi khi shutdown:', error);
+      process.exit(1);
     }
   });
   
-  // Force close sau 10 giây
+  // Force shutdown sau 30 giây
   setTimeout(() => {
-    console.error('❌ Timeout - Buộc đóng server');
+    console.error('⏰ Force shutdown sau 30 giây timeout');
     process.exit(1);
-  }, 10000);
+  }, 30000);
 };
 
-// Handle shutdown signals
+// Lắng nghe các tín hiệu shutdown
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Error handling - quan trọng cho Railway
+// Xử lý uncaught exceptions
 process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-  console.error('Stack:', error.stack);
-  // Không tự động shutdown để tránh crash liên tục trên Railway
-  // gracefulShutdown('uncaughtException');
+  console.error('💥 Uncaught Exception:', error);
+  gracefulShutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-  // Không tự động shutdown để tránh crash liên tục trên Railway
+  console.error('💥 Unhandled Rejection tại:', promise, 'lý do:', reason);
+  gracefulShutdown('unhandledRejection');
 });
 
-// Khởi động server
-const startServer = async () => {
-  try {
-    console.log('🚀 Đang khởi động SnakeChat Backend...');
-    console.log('🌍 Environment:', process.env.NODE_ENV || 'development');
-    console.log('📦 Node.js version:', process.version);
-    
-    // Thử kết nối database nhưng không blocking server start
-    console.log('🔄 Đang kết nối database...');
-    connectToDatabase().catch(err => {
-      console.warn('⚠️ Không thể kết nối database lúc startup, sẽ thử lại sau:', err.message);
-    });
-    
-    // Start server ngay lập tức
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log('🚀 Server đang chạy trên cổng:', PORT);
-      console.log('🌐 Server URL: http://0.0.0.0:' + PORT);
-      console.log('✅ SnakeChat Backend đã sẵn sàng!');
-    });
-    
-  } catch (error) {
-    console.error('❌ Lỗi khởi động server:', error);
-    console.error('Stack:', error.stack);
-    // Thử khởi động lại sau một khoảng thời gian
-    setTimeout(() => {
-      console.log('🔄 Thử khởi động lại server...');
-      startServer();
-    }, 5000);
-  }
-};
-
-// Start server
-startServer();
+console.log('🚀 SnakeChat Backend khởi động thành công!');
