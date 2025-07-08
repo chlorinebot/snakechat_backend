@@ -2,10 +2,10 @@ const mysql = require('mysql2/promise');
 
 // Cấu hình kết nối tới MySQL
 const pool = mysql.createPool({
-  host: '127.0.0.1',
+  host: 'crossover.proxy.rlwy.net',
   user: 'root',
-  password: '',
-  port: '3306',
+  password: 'UfLbHIusxLkfkhNjHLtMyVcngTWqhkhG',
+  port: '24147',
   database: 'snakechat',
   waitForConnections: true,
   connectionLimit: 10,
